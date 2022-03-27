@@ -63,7 +63,7 @@
  * @module StyleManager
  */
 
-import { isElement, isUndefined, isArray, isString, debounce } from 'underscore';
+import { isUndefined, isArray, isString, debounce, bindAll } from 'underscore';
 import { isComponent } from 'utils/mixins';
 import Module from 'common/module';
 import { Model } from 'common';
@@ -127,6 +127,7 @@ export default () => {
      * @private
      */
     init(config = {}) {
+      bindAll(this, '__clearStateTarget');
       this.__initConfig(defaults, config);
       const c = this.config;
       const { em } = c;
@@ -145,6 +146,8 @@ export default () => {
       const ev = 'component:toggled component:update:classes change:state change:device frame:resized selector:type';
       const upAll = debounce(() => this.__upSel());
       model.listenTo(em, ev, upAll);
+      // Clear state target on any component selection change, without debounce (#4208)
+      model.listenTo(em, 'component:toggled', this.__clearStateTarget);
 
       // Triggers only for properties (avoid selection refresh)
       const upProps = debounce(() => {
@@ -174,6 +177,16 @@ export default () => {
 
     __trgEv(event, ...data) {
       this.em.trigger(event, ...data);
+    },
+
+    __clearStateTarget() {
+      const { em } = this;
+      const stateTarget = this.__getStateTarget();
+      stateTarget &&
+        em?.skip(() => {
+          em.get('CssComposer').remove(stateTarget);
+          this.model.set({ stateTarget: null });
+        });
     },
 
     onLoad() {
@@ -270,7 +283,7 @@ export default () => {
     addProperty(sectorId, property, opts = {}) {
       const sector = this.getSector(sectorId, { warn: 1 });
       let prop = null;
-      if (sector) prop = sector.get('properties').add(property, opts);
+      if (sector) prop = sector.addProperty(property, opts);
 
       return prop;
     },
@@ -362,23 +375,12 @@ export default () => {
       const lastTargetParents = this.getParentRules(lastTarget, { state, component });
       let stateTarget = this.__getStateTarget();
 
-      // Update sectors/properties visibility
-      sectors.forEach(sector => {
-        const props = sector.getProperties();
-        props.forEach(prop => {
-          const isVisible = prop.__checkVisibility({ target: lastTarget, component, sectors });
-          prop.set('visible', isVisible);
-        });
-        const sectorVisible = props.some(p => p.isVisible());
-        sector.set('visible', sectorVisible);
-      });
-
       // Handle the creation and update of the state rule, if enabled.
       em.skip(() => {
         if (state && lastTarget?.getState?.()) {
           const style = lastTarget.getStyle();
           if (!stateTarget) {
-            stateTarget = cssc.getAll().add({ selectors: 'gjs-selected', style, important: true });
+            stateTarget = cssc.getAll().add({ selectors: 'gjs-selected', style, shallow: true, important: true });
           } else {
             stateTarget.setStyle(style);
           }
@@ -388,7 +390,7 @@ export default () => {
         }
       });
 
-      this.model.set({ targets, lastTarget, lastTargetParents, stateTarget });
+      this.model.set({ targets, lastTarget, lastTargetParents, stateTarget, component });
       this.__upProps(opts);
 
       return targets;
@@ -672,6 +674,7 @@ export default () => {
       const lastTarget = this.getSelected();
       if (!lastTarget) return;
 
+      const component = this.model.get('component');
       const lastTargetParents = this.getSelectedParents();
       const style = lastTarget.getStyle();
       const parentStyles = lastTargetParents.map(p => ({
@@ -683,6 +686,17 @@ export default () => {
         sector.getProperties().map(prop => {
           this.__upProp(prop, style, parentStyles, opts);
         });
+      });
+
+      // Update sectors/properties visibility
+      sectors.forEach(sector => {
+        const props = sector.getProperties();
+        props.forEach(prop => {
+          const isVisible = prop.__checkVisibility({ target: lastTarget, component, sectors });
+          prop.set('visible', isVisible);
+        });
+        const sectorVisible = props.some(p => p.isVisible());
+        sector.set('visible', sectorVisible);
       });
     },
 
@@ -753,6 +767,8 @@ export default () => {
       [properties, sectors, SectView].forEach(i => (i = {}));
       this.em = {};
       this.config = {};
+      this.builtIn = {};
+      this.model = {};
     },
   };
 };
